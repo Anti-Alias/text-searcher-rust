@@ -66,6 +66,7 @@ fn has_extension(file: &Path, extensions: Option<&Vec<OsString>>) -> bool {
 fn process(path: impl AsRef<Path>) -> Result<(), std::io::Error> {
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
+    let phrases = &[];
     let finder = Finder::new(phrases, 256, 256, &mut reader);
     for group in finder {
         for instance in group.0 {
