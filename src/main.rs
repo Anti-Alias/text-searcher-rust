@@ -1,4 +1,7 @@
-use std::{path::{PathBuf, Path}, ffi::{OsStr, OsString}, fs::File, io::BufReader};
+use std::path::{PathBuf, Path};
+use std::ffi::{OsString};
+use std::fs::File;
+use std::io::BufReader;
 
 use clap::{arg, Command};
 use text_searcher_rust::{Finder, Phrase, Text};
@@ -42,7 +45,7 @@ fn main() {
         });
 
     // Gets number of threads
-    let threads: u32 = matches.value_of("threads")
+    let _threads: u32 = matches.value_of("threads")
         .unwrap()
         .parse()
         .unwrap();
@@ -56,7 +59,7 @@ fn main() {
 
     // Processes expanded files
     for file in files_recursive {
-        process(file, phrases.as_slice());
+        process(file, phrases.as_slice()).unwrap();
     }
 }
 

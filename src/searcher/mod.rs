@@ -380,7 +380,6 @@ fn search_with_diff(a: &[u32], b: &[u8], codepoint_diff: i32) -> Option<TokenIns
     if a.is_empty() { return None; }
     if a.len() > b_len { return None; }
     'outer: for b_idx in 0..(b_len - a.len() + 1) {
-        let b_at_idx = b[b_idx];
         for a_idx in 0..a.len() {
             let char_a = a[a_idx] as i32;
             let char_b = b[b_idx + a_idx] as u32;
@@ -404,7 +403,6 @@ fn search_2bytes_with_diff(a: &[u32], b: &[u8], codepoint_diff: i32) -> Option<T
     if a.is_empty() { return None; }
     if a.len() > b_len { return None; }
     'outer: for b_idx in 0..(b_len - a.len() + 1) {
-        let b_at_idx = get_2bytes(b, b_idx);
         for a_idx in 0..a.len() {
             let char_a = a[a_idx] as i32;
             let char_b = get_2bytes(b, b_idx + a_idx);
@@ -730,6 +728,30 @@ fn test_edgecase() {
     let phrase = Phrase::from_strs(&["Making", "a"]);
     let phrases = &[phrase];
     let mut finder = Finder::new(phrases, 64, 32, &mut input);
+
+    let found = finder.next();
+    let expected = Some(PhraseInstanceGroup(vec![PhraseInstance {
+        phrase_index: 0,
+        file_pos: 8,
+        codepoint_diff: 0,
+        bytes_per_character: 1
+    }]));
+    assert_eq!(expected, found);
+}
+
+#[test]
+fn test_edgecase_2() {
+    use std::io::BufReader;
+    let mut input: Vec<u8> = "the fox quick brown fox".as_bytes().to_vec();
+    input[4] += 1;
+    input[5] += 1;
+    input[6] += 1;
+    let mut reader = BufReader::new(input.as_slice());
+
+    // Sets up finder
+    let phrase = Phrase::from_strs(&["quick", "fox"]);
+    let phrases = &[phrase];
+    let mut finder = Finder::new(phrases, 64, 32, &mut reader);
 
     let found = finder.next();
     let expected = Some(PhraseInstanceGroup(vec![PhraseInstance {
