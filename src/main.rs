@@ -14,6 +14,8 @@ fn main() {
         .about("Searches for text in binary files")
         .arg(arg!(-f --file <VALUE> ...))
         .arg(arg!(-p --phrase <VALUE> ...))
+        .arg(arg!(-c --context_size <VALUE> ...))
+        .arg(arg!(-w --window_size <VALUE> ...))
         .arg(arg!(-e --extension <VALUE> ...).required(false))
         .arg(arg!(-t --threads <VALUE>).required(false).default_value("8"))
         .get_matches();
@@ -44,6 +46,20 @@ fn main() {
             values.map(|ext| OsString::from(ext)).collect()
         });
 
+    // Gets context size
+    let context_size: usize = matches
+        .value_of("context_size")
+        .unwrap()
+        .parse()
+        .unwrap();
+
+    // Gets window size
+    let window_size: usize = matches
+        .value_of("window_size")
+        .unwrap()
+        .parse()
+        .unwrap();
+
     // Gets number of threads
     let _threads: u32 = matches.value_of("threads")
         .unwrap()
@@ -59,7 +75,7 @@ fn main() {
 
     // Processes expanded files
     for file in files_recursive {
-        process(file, phrases.as_slice()).unwrap();
+        process(file, phrases.as_slice(), context_size, window_size).unwrap();
     }
 }
 
@@ -101,9 +117,12 @@ fn has_extension(file: &Path, extensions: Option<&[OsString]>) -> bool {
         .any(|ext| ext == file_ext)
 }
 
-fn process(path: impl AsRef<Path>, phrases: &[Phrase]) -> Result<(), std::io::Error> {
-    let context_size = 64;
-    let window_size = 32;
+fn process(
+    path: impl AsRef<Path>,
+    phrases: &[Phrase],
+    context_size: usize,
+    window_size: usize
+) -> Result<(), std::io::Error> {
     let path = path.as_ref();
     let file = File::open(path)?;
     let mut reader = BufReader::new(file);
@@ -115,21 +134,12 @@ fn process(path: impl AsRef<Path>, phrases: &[Phrase]) -> Result<(), std::io::Er
             let bbc = instance.bytes_per_character;
             let cpd = instance.codepoint_diff;
             let ctx = finder.get_context(cpd, bbc);
-            let spacing = "             ";
-            let mut underline = String::new();
-            let underline_idx = instance.file_pos - finder.get_context_range().start;
-            for _ in 0..underline_idx {
-                underline.push(' ');
-            }
-            underline.push('-');
             println!(
-                "File:       '{}'\nphrase:     '{}'\nFile pos:   {}\ncontext:    '{}'\n{}{}\n",
+                "File:       '{}'\nphrase:     '{}'\nFile pos:   {}\ncontext:    '{}'",
                 path.display(),
                 phrase,
                 instance.file_pos,
                 ctx,
-                spacing,
-                underline
             );
         }
         next = finder.next();
