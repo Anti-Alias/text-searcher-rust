@@ -1,18 +1,19 @@
 use std::io::Read;
-use std::fmt::{self, Write};
+use std::fmt::{self, Write, Display};
+use std::ops::Range;
 use circle_buffer::CircleBuffer;
 
 
 /// Searches for a set of phrases.
 pub struct Finder<'a, R: Read> {
-    phrases: &'a [Phrase],
-    phrase_skip_counters: Vec<usize>,
-    reader: &'a mut R,
-    context: CircleBuffer<u8>,
-    window_size: usize,
-    window_right: usize,
-    file_pos: usize,
-    flush_counter: usize
+    phrases: &'a [Phrase],              // Phrases to search for
+    phrase_skip_counters: Vec<usize>,   // Skip counter parallel to phrases
+    reader: &'a mut R,                  // Input to search
+    current_byte: usize,                // Current position of the stream we're in. Similar to file position.
+    context: CircleBuffer<u8>,          // Buffer that bytes from input will be sent to / searched in
+    window_size: usize,                 // Size of the window into the context
+    window_right: usize,                // Last index + 1 of the window
+    flush_counter: usize                // How many extra times we need to slice the window to the right at the end of the file
 }
 
 impl<'a, R: Read> Iterator for Finder<'a, R> {
@@ -27,11 +28,11 @@ impl<'a, R: Read> Iterator for Finder<'a, R> {
         let mut next = self.next_char();
         while let Some(char) = next {
 
-            // Put the char into the circle buffer and compute window boundaries
+            // Put the char into the circle buffer and search for phrases in it
             phrase_instances.clear();
             self.context.push(char);
             self.find_phrases(&mut phrase_instances);
-            self.file_pos += 1;
+            self.current_byte += 1;
 
             // If at least once instance was found, return it as a group
             if !phrase_instances.is_empty() {
@@ -47,7 +48,7 @@ impl<'a, R: Read> Iterator for Finder<'a, R> {
             phrase_instances.clear();
             self.context.push(0);
             self.find_phrases(&mut phrase_instances);
-            self.file_pos += 1;
+            self.current_byte += 1;
             self.flush_counter -= 1;
             if !phrase_instances.is_empty() {
                 return Some(PhraseInstanceGroup(phrase_instances));
@@ -87,20 +88,37 @@ impl<'a, R: Read> Finder<'a, R> {
             window_size,
             window_right: w_right,
             reader,
-            file_pos: 0,
+            current_byte: 0,
             flush_counter: context_size - w_right
         }
     }
+
+    pub fn get_context_range(&self) -> Range<usize> {
+        Range {
+            start: self.current_byte - self.context.len(),
+            end: self.current_byte
+        }
+    }
+
+    pub fn get_window_range(&self) -> Range<usize> {
+        let (w_left, w_right) = self.get_window_bounds();
+        Range {
+            start: w_left - self.current_byte,
+            end: w_right - self.current_byte
+        }
+    }
+
+    pub fn context_size(&self) -> usize { self.context.len() }
+
+    pub fn file_pos(&self) -> usize { self.current_byte }
 
     /// Gets context for this finder
     pub fn get_context(&self, codepoint_diff: i32, bytes_per_character: u32) -> Text {
         Text::from_slice(self.context.as_slice(), codepoint_diff, bytes_per_character)
     }
 
+    // Finds phrases in current window
     fn find_phrases(&mut self, phrase_instances: &mut Vec<PhraseInstance>) {
-
-        // Gets window bounds
-        let (w_left, w_right) = self.get_window_bounds();
 
         // For all phrases..
         for i in 0..self.phrases.len() {
@@ -113,14 +131,9 @@ impl<'a, R: Read> Finder<'a, R> {
             }
 
             // Search for phrase
+            let (w_left, w_right) = self.get_window_bounds();
             self.find_phrase(i, w_left, w_right, phrase_instances);
         }
-    }
-
-    fn get_window_bounds(&self) -> (usize, usize) {
-        let w_right = if self.window_right > self.context.len() { self.context.len() } else { self.window_right };
-        let w_left = if w_right > self.window_size { w_right - self.window_size } else { 0 };
-        (w_left, w_right)
     }
 
     /// Searches for a single phrase
@@ -138,30 +151,30 @@ impl<'a, R: Read> Finder<'a, R> {
         let window = &context[w_left..w_right];
 
         // Searches for the phrase in the window calculated
-        let mut earliest_token_idx = usize::MAX;
-        let mut last_diff = -1;
-        let mut last_bpc = 0;
+        let mut earliest_token_idx = usize::MAX;    // Index of earliest token index found
+        let mut last_diff: Option<i32> = None;      // Last character diff
+        let mut last_bpc = 0;                       // Last bytes-per-character
         for token in &phrase.0 {
 
             // If token was found in the buffer...
-            if let Some(search_result) = search_multibyte(&token.0, window) {
+            if let Some(token_instance) = search_multibyte(&token.0, window, last_diff) {
 
                 // If another token in the phrase was found previously, but it had a different
                 // codepoint diff or bytes-per-character value, it's a failed match
-                if last_diff != -1 {
-                    let diff = search_result.codepoint_diff;
-                    let bpc = search_result.bytes_per_character;
+                if let Some(last_diff) = last_diff {
+                    let diff = token_instance.codepoint_diff;
+                    let bpc = token_instance.bytes_per_character;
                     if diff != last_diff || bpc != last_bpc {
                         return;
                     }
                 }
 
                 // Keep track of the earliest token index in the phrase so we know how much to skip when we're done
-                let token_idx = search_result.index;
+                let token_idx = token_instance.index;
                 if token_idx < earliest_token_idx {
                     earliest_token_idx = token_idx;
-                    last_diff = search_result.codepoint_diff;
-                    last_bpc = search_result.bytes_per_character;
+                    last_diff = Some(token_instance.codepoint_diff);
+                    last_bpc = token_instance.bytes_per_character;
                 }
             }
 
@@ -172,15 +185,21 @@ impl<'a, R: Read> Finder<'a, R> {
         }
 
         // Add the buffer's contents to results and skip past the phrase
-        let cb = self.file_pos + 1;
-        let file_pos = cb - context.len() + w_left + earliest_token_idx;
+        let bytes_read = self.current_byte + 1;
+        let w_left_pos = bytes_read - self.context.len() + w_left;
         instances.push(PhraseInstance {
             phrase_index,
-            codepoint_diff: last_diff,
-            file_pos,
+            codepoint_diff: last_diff.unwrap(),
+            file_pos: w_left_pos + earliest_token_idx,
             bytes_per_character: last_bpc
         });
         self.phrase_skip_counters[phrase_index] = earliest_token_idx;
+    }
+
+    fn get_window_bounds(&self) -> (usize, usize) {
+        let w_right = if self.window_right > self.context.len() { self.context.len() } else { self.window_right };
+        let w_left = if w_right > self.window_size { w_right - self.window_size } else { 0 };
+        (w_left, w_right)
     }
 
     fn next_char(&mut self) -> Option<u8> {
@@ -201,7 +220,7 @@ impl<'a, R: Read> Finder<'a, R> {
 
 /// A "String" as a sequence of u32s
 #[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct Text(Vec<u32>);
+pub struct Text(pub Vec<u32>);
 impl Text {
     pub fn from_str(str: &str) -> Self {
         let vec = str
@@ -237,23 +256,39 @@ impl Text {
         }
         Self(vec)
     }
-}
-impl ToString for Text {
-    fn to_string(&self) -> String {
-        self.0
-            .iter()
-            .map(|num| match char::from_u32(*num) {
-                Some(char) => char,
-                None => '?'
-            })
-            .collect()
+
+    fn write_chars(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        for char_u32 in &self.0 {
+            let char_u32 = *char_u32;
+            let char = match char::try_from(char_u32) {
+                Ok(char) => char,
+                Err(_) => '?'
+            };
+            if char_u32 >= 32 && char_u32 <= 126 {
+                f.write_char(char)?;
+            }
+            else {
+                match char {
+                    '\n' | '\r' | '\t' | '\0' => f.write_char(' ')?,
+                    _ => f.write_char('?')?
+                }
+            }
+        }
+        Ok(())
     }
 }
 impl fmt::Debug for Text {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_char('"').unwrap();
-        f.write_str(&self.to_string()).unwrap();
-        f.write_char('"').unwrap();
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        f.write_char('"')?;
+        self.write_chars(f)?;
+        f.write_char('"')?;
+        Ok(())
+    }
+}
+
+impl fmt::Display for Text {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        self.write_chars(f)?;
         Ok(())
     }
 }
@@ -263,20 +298,32 @@ impl AsRef<[u32]> for Text {
 
 
 /// Searches for a within b
-fn search_multibyte(a: &[u32], b: &[u8]) -> Option<SearchResult> {
-    let result = search(a, b);
-    if result.is_some() {
-        return result;
+fn search_multibyte(a: &[u32], b: &[u8], codepoint_diff: Option<i32>) -> Option<TokenInstance> {
+    if let Some(codepoint_diff) = codepoint_diff {
+        let result = search_with_diff(a, b, codepoint_diff);
+        if result.is_some() {
+            return result;
+        }
+        let result = search_2bytes_with_diff(a, b, codepoint_diff);
+        if result.is_some() {
+            return result;
+        }
     }
-    let result = search_2bytes(a, b);
-    if result.is_some() {
-        return result;
+    else {
+        let result = search(a, b);
+        if result.is_some() {
+            return result;
+        }
+        let result = search_2bytes(a, b);
+        if result.is_some() {
+            return result;
+        }
     }
     None
 }
 
 /// Searches for a within b
-fn search(a: &[u32], b: &[u8]) -> Option<SearchResult> {
+fn search(a: &[u32], b: &[u8]) -> Option<TokenInstance> {
     let a = a.as_ref();
     let b = b.as_ref();
     let b_len = b.len();
@@ -291,7 +338,7 @@ fn search(a: &[u32], b: &[u8]) -> Option<SearchResult> {
             let char_b = char_b as i32 - codepoint_diff;
             if char_a != char_b { continue 'outer; }
         }
-        return Some(SearchResult {
+        return Some(TokenInstance {
             index: b_idx,
             codepoint_diff,
             bytes_per_character: 1
@@ -301,7 +348,7 @@ fn search(a: &[u32], b: &[u8]) -> Option<SearchResult> {
 }
 
 /// Searches for a within b. Assumes b is 2 bytes per character.
-fn search_2bytes(a: &[u32], b: &[u8]) -> Option<SearchResult> {
+fn search_2bytes(a: &[u32], b: &[u8]) -> Option<TokenInstance> {
     let a = a.as_ref();
     let b = b.as_ref();
     let b_len = b.len() / 2;
@@ -316,7 +363,55 @@ fn search_2bytes(a: &[u32], b: &[u8]) -> Option<SearchResult> {
             let char_b = char_b as i32 - codepoint_diff;
             if char_a != char_b { continue 'outer; }
         }
-        return Some(SearchResult {
+        return Some(TokenInstance {
+            index: b_idx*2,
+            codepoint_diff,
+            bytes_per_character: 2
+        });
+    }
+    return None;
+}
+
+/// Searches for a within b, assuming the specified codepoind diff
+fn search_with_diff(a: &[u32], b: &[u8], codepoint_diff: i32) -> Option<TokenInstance> {
+    let a = a.as_ref();
+    let b = b.as_ref();
+    let b_len = b.len();
+    if a.is_empty() { return None; }
+    if a.len() > b_len { return None; }
+    'outer: for b_idx in 0..(b_len - a.len() + 1) {
+        let b_at_idx = b[b_idx];
+        for a_idx in 0..a.len() {
+            let char_a = a[a_idx] as i32;
+            let char_b = b[b_idx + a_idx] as u32;
+            let char_b = char_b as i32 - codepoint_diff;
+            if char_a != char_b { continue 'outer; }
+        }
+        return Some(TokenInstance {
+            index: b_idx,
+            codepoint_diff,
+            bytes_per_character: 1
+        });
+    }
+    return None;
+}
+
+/// Searches for a within b. Assumes b is 2 bytes per character.
+fn search_2bytes_with_diff(a: &[u32], b: &[u8], codepoint_diff: i32) -> Option<TokenInstance> {
+    let a = a.as_ref();
+    let b = b.as_ref();
+    let b_len = b.len() / 2;
+    if a.is_empty() { return None; }
+    if a.len() > b_len { return None; }
+    'outer: for b_idx in 0..(b_len - a.len() + 1) {
+        let b_at_idx = get_2bytes(b, b_idx);
+        for a_idx in 0..a.len() {
+            let char_a = a[a_idx] as i32;
+            let char_b = get_2bytes(b, b_idx + a_idx);
+            let char_b = char_b as i32 - codepoint_diff;
+            if char_a != char_b { continue 'outer; }
+        }
+        return Some(TokenInstance {
             index: b_idx*2,
             codepoint_diff,
             bytes_per_character: 2
@@ -333,7 +428,8 @@ pub fn get_2bytes(slice: &[u8], idx: usize) -> u32 {
 
 
 /// Result of a text search
-pub struct SearchResult {
+#[derive(Debug, Copy, Clone)]
+pub struct TokenInstance {
     pub index: usize,
     pub codepoint_diff: i32,
     pub bytes_per_character: u32
@@ -341,7 +437,7 @@ pub struct SearchResult {
 
 /// A sequence of texts
 #[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct Phrase(Vec<Text>);
+pub struct Phrase(pub Vec<Text>);
 impl Phrase {
     pub fn from_strs(strs: &[&str]) -> Self {
         let texts = strs
@@ -349,6 +445,18 @@ impl Phrase {
             .map(|str| Text::from_str(str))
             .collect();
         Self(texts)
+    }
+}
+
+impl Display for Phrase {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        for (index, text) in self.0.iter().enumerate() {
+            text.fmt(f)?;
+            if index != self.0.len() - 1 {
+                f.write_char(' ')?;
+            }
+        }
+        Ok(())
     }
 }
 
@@ -362,6 +470,7 @@ pub struct PhraseInstance {
 }
 
 /// A group of phrase instances
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd)]
 pub struct PhraseInstanceGroup(pub Vec<PhraseInstance>);
 
 #[test]
@@ -611,4 +720,23 @@ fn test_search() {
     assert!(search(&a.0, &b).is_some());
     let a = Text::from_str("this");
     assert!(search(&a.0, &b).is_none());
+}
+
+
+#[test]
+fn test_bullshit() {
+    let mut input = "fuel,   Making a famine w".as_bytes();
+    // Sets up finder
+    let phrase = Phrase::from_strs(&["Making", "a"]);
+    let phrases = &[phrase];
+    let mut finder = Finder::new(phrases, 64, 32, &mut input);
+
+    let found = finder.next();
+    let expected = Some(PhraseInstanceGroup(vec![PhraseInstance {
+        phrase_index: 0,
+        file_pos: 8,
+        codepoint_diff: 0,
+        bytes_per_character: 1
+    }]));
+    assert_eq!(expected, found);
 }
