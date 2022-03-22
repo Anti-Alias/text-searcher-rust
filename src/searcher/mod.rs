@@ -724,7 +724,7 @@ fn test_search() {
 
 
 #[test]
-fn test_bullshit() {
+fn test_edgecase() {
     let mut input = "fuel,   Making a famine w".as_bytes();
     // Sets up finder
     let phrase = Phrase::from_strs(&["Making", "a"]);
