@@ -9,7 +9,7 @@ pub struct Finder<'a, R: Read> {
     phrases: &'a [Phrase],              // Phrases to search for
     phrase_skip_counters: Vec<usize>,   // Skip counter parallel to phrases
     reader: &'a mut R,                  // Input to search
-    current_byte: usize,                // Current position of the stream we're in. Similar to file position.
+    bytes_read: usize,                  // Current position of the stream we're in. Similar to file position.
     context: CircleBuffer<u8>,          // Buffer that bytes from input will be sent to / searched in
     window_size: usize,                 // Size of the window into the context
     window_right: usize,                // Last index + 1 of the window
@@ -32,7 +32,7 @@ impl<'a, R: Read> Iterator for Finder<'a, R> {
             phrase_instances.clear();
             self.context.push(char);
             self.find_phrases(&mut phrase_instances);
-            self.current_byte += 1;
+            self.bytes_read += 1;
 
             // If at least once instance was found, return it as a group
             if !phrase_instances.is_empty() {
@@ -48,7 +48,7 @@ impl<'a, R: Read> Iterator for Finder<'a, R> {
             phrase_instances.clear();
             self.context.push(0);
             self.find_phrases(&mut phrase_instances);
-            self.current_byte += 1;
+            self.bytes_read += 1;
             self.flush_counter -= 1;
             if !phrase_instances.is_empty() {
                 return Some(PhraseInstanceGroup(phrase_instances));
@@ -88,29 +88,29 @@ impl<'a, R: Read> Finder<'a, R> {
             window_size,
             window_right: w_right,
             reader,
-            current_byte: 0,
+            bytes_read: 0,
             flush_counter: context_size - w_right
         }
     }
 
     pub fn get_context_range(&self) -> Range<usize> {
         Range {
-            start: self.current_byte - self.context.len(),
-            end: self.current_byte
+            start: self.bytes_read - self.context.len(),
+            end: self.bytes_read
         }
     }
 
     pub fn get_window_range(&self) -> Range<usize> {
         let (w_left, w_right) = self.get_window_bounds();
         Range {
-            start: w_left - self.current_byte,
-            end: w_right - self.current_byte
+            start: w_left - self.bytes_read,
+            end: w_right - self.bytes_read
         }
     }
 
     pub fn context_size(&self) -> usize { self.context.len() }
 
-    pub fn file_pos(&self) -> usize { self.current_byte }
+    pub fn bytes_read(&self) -> usize { self.bytes_read }
 
     /// Gets context for this finder
     pub fn get_context(&self, codepoint_diff: i32, bytes_per_character: u32) -> Text {
@@ -185,7 +185,7 @@ impl<'a, R: Read> Finder<'a, R> {
         }
 
         // Add the buffer's contents to results and skip past the phrase
-        let bytes_read = self.current_byte + 1;
+        let bytes_read = self.bytes_read + 1;
         let w_left_pos = bytes_read - self.context.len() + w_left;
         instances.push(PhraseInstance {
             phrase_index,

@@ -2,9 +2,11 @@ use std::path::{PathBuf, Path};
 use std::ffi::{OsString};
 use std::fs::File;
 use std::io::BufReader;
+use csv::Writer;
 
 use clap::{arg, Command};
 use text_searcher_rust::{Finder, Phrase, Text};
+use threadpool::ThreadPool;
 use walkdir::WalkDir;
 
 fn main() {
@@ -61,7 +63,7 @@ fn main() {
         .unwrap();
 
     // Gets number of threads
-    let _threads: u32 = matches.value_of("threads")
+    let threads: usize = matches.value_of("threads")
         .unwrap()
         .parse()
         .unwrap();
@@ -74,9 +76,14 @@ fn main() {
     get_files_recursive(&mut files_recursive, &files, extensions);
 
     // Processes expanded files
+    let pool = ThreadPool::new(threads);
     for file in files_recursive {
-        process(file, phrases.as_slice(), context_size, window_size).unwrap();
+        let phrases = phrases.clone();
+        pool.execute(move || {
+            process(file, phrases.as_slice(), context_size, window_size).unwrap();
+        });
     }
+    pool.join()
 }
 
 // Takes all files in `src` expands them recursively, and places all non-directory files in `dest`.
@@ -128,19 +135,29 @@ fn process(
     let mut reader = BufReader::new(file);
     let mut finder = Finder::new(phrases, context_size, window_size, &mut reader);
     let mut next = finder.next();
+    let mut writer = Writer::from_writer(std::io::stdout());
+    writer.write_record(&[
+        "file",
+        "phrase",
+        "file_pos",
+        "codepoint_diff",
+        "bytes_per_character",
+        "context"
+    ]).unwrap();
     while let Some(group) = next {
         for instance in group.0 {
             let phrase = &phrases[instance.phrase_index];
             let bbc = instance.bytes_per_character;
             let cpd = instance.codepoint_diff;
             let ctx = finder.get_context(cpd, bbc);
-            println!(
-                "File:       '{}'\nphrase:     '{}'\nFile pos:   {}\ncontext:    '{}'",
-                path.display(),
-                phrase,
-                instance.file_pos,
-                ctx,
-            );
+            writer.write_record(&[
+                &path.display().to_string(),
+                &phrase.to_string(),
+                &finder.bytes_read().to_string(),
+                &cpd.to_string(),
+                &bbc.to_string(),
+                &ctx.to_string()
+            ]).unwrap();
         }
         next = finder.next();
     }
