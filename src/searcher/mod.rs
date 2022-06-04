@@ -2,11 +2,15 @@ use std::io::Read;
 use std::fmt::{self, Write, Display};
 use std::ops::Range;
 use circle_buffer::CircleBuffer;
+use serde::{Serialize, Deserialize};
+
+mod text;
+pub use text::*;
 
 
 /// Searches for a set of phrases.
 pub struct Finder<'a, R: Read> {
-    phrases: &'a [Phrase],              // Phrases to search for
+    phrases: Vec<Phrase>,              // Phrases to search for
     phrase_skip_counters: Vec<usize>,   // Skip counter parallel to phrases
     reader: &'a mut R,                  // Input to search
     bytes_read: usize,                  // Current position of the stream we're in. Similar to file position.
@@ -62,7 +66,7 @@ impl<'a, R: Read> Iterator for Finder<'a, R> {
 
 impl<'a, R: Read> Finder<'a, R> {
     pub fn new(
-        phrases: &'a [Phrase],
+        phrases: &[Phrase],
         context_size: usize,
         window_size: usize,
         reader: &'a mut R
@@ -82,7 +86,7 @@ impl<'a, R: Read> Finder<'a, R> {
         let w_right = if w_right > context_size { context_size } else { w_right };
 
         Self {
-            phrases,
+            phrases: phrases.to_vec(),
             phrase_skip_counters: vec![0; phrases.len()],
             context: CircleBuffer::with_capacity(context_size),
             window_size,
@@ -217,85 +221,6 @@ impl<'a, R: Read> Finder<'a, R> {
         }
     }
 }
-
-/// A "String" as a sequence of u32s
-#[derive(Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
-pub struct Text(pub Vec<u32>);
-impl Text {
-    pub fn from_str(str: &str) -> Self {
-        let vec = str
-            .chars()
-            .map(|c| c as u32 )
-            .collect();
-        Self(vec)
-    }
-
-    pub fn from_slice(slice: &[u8], codepoint_diff: i32, bytes_per_char: u32) -> Self {
-        match bytes_per_char {
-            1 => Self::from_slice_1byte(slice, codepoint_diff),
-            2 => Self::from_slice_2bytes(slice, codepoint_diff),
-            _ => panic!("Invalid bytes_per_char {}. Must be 1, 2 or 4", bytes_per_char)
-        }
-    }
-
-    pub fn from_slice_1byte(slice: &[u8], codepoint_diff: i32) -> Self {
-        let mut vec = Vec::with_capacity(slice.len());
-        for num in slice {
-            let num = (*num as i32 - codepoint_diff) as u32;
-            vec.push(num);
-        }
-        Self(vec)
-    }
-
-    pub fn from_slice_2bytes(slice: &[u8], codepoint_diff: i32) -> Self {
-        let mut vec = Vec::with_capacity(slice.len());
-        for chunk in slice.chunks(2) {
-            let num = chunk[0] as u32 + ((chunk[1] as u32) << 8);
-            let num = (num as i32 - codepoint_diff) as u32;
-            vec.push(num);
-        }
-        Self(vec)
-    }
-
-    fn write_chars(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        for char_u32 in &self.0 {
-            let char_u32 = *char_u32;
-            let char = match char::try_from(char_u32) {
-                Ok(char) => char,
-                Err(_) => '?'
-            };
-            if char_u32 >= 32 && char_u32 <= 126 {
-                f.write_char(char)?;
-            }
-            else {
-                match char {
-                    '\n' | '\r' | '\t' | '\0' => f.write_char(' ')?,
-                    _ => f.write_char('?')?
-                }
-            }
-        }
-        Ok(())
-    }
-}
-impl fmt::Debug for Text {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        f.write_char('"')?;
-        self.write_chars(f)?;
-        f.write_char('"')?;
-        Ok(())
-    }
-}
-
-impl fmt::Display for Text {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        self.write_chars(f)?;
-        Ok(())
-    }
-}
-impl AsRef<[u32]> for Text {
-    fn as_ref(&self) -> &[u32] { &self.0 }
-}
-
 
 /// Searches for a within b
 fn search_multibyte(a: &[u32], b: &[u8], codepoint_diff: Option<i32>) -> Option<TokenInstance> {
@@ -434,7 +359,7 @@ pub struct TokenInstance {
 }
 
 /// A sequence of texts
-#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash)]
+#[derive(Debug, Clone, Eq, PartialEq, Ord, PartialOrd, Hash, Serialize, Deserialize)]
 pub struct Phrase(pub Vec<Text>);
 impl Phrase {
     pub fn from_strs(strs: &[&str]) -> Self {

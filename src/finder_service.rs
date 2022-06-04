@@ -3,6 +3,7 @@ use std::fs::{File, metadata};
 use std::path::{PathBuf, Path};
 use std::sync::{Mutex, MutexGuard};
 
+use text_searcher_rust::Phrase;
 use walkdir::WalkDir;
 use serde::{Serialize, Deserialize};
 
@@ -16,12 +17,23 @@ pub struct FinderService {
 // Represents the inner state of a [`FinderService`]
 #[derive(Serialize, Deserialize)]
 pub struct State {
-    files: HashSet<PathBuf>
+    files: HashSet<PathBuf>,
+    phrases: HashSet<Phrase>
 }
 
+
 impl State {
+    pub fn new() -> Self {
+        Self {
+            files: HashSet::new(),
+            phrases: HashSet::new()
+        }
+    }
     pub fn files(&self) -> impl Iterator<Item=&PathBuf> {
         self.files.iter()
+    }
+    pub fn phrases(&self) -> impl Iterator<Item=&Phrase> {
+        self.phrases.iter()
     }
 }
 
@@ -40,7 +52,7 @@ impl FinderService {
             },
             Err(_) => Self {
                 persist_file,
-                state: Mutex::new(State { files: HashSet::new() })
+                state: Mutex::new(State::new())
             }
         }
     }
@@ -68,6 +80,18 @@ impl FinderService {
     pub fn remove_files<P: AsRef<Path>>(&self, filename: P) {
         let files = &mut self.state.lock().unwrap().files;
         files.retain(|file| !file.starts_with(&filename));
+    }
+
+    /// Adds a phrase to the service
+    pub fn add_phrase(&self, phrase: Phrase) {
+        let mut state = self.state.lock().unwrap();
+        state.phrases.insert(phrase);
+    }
+
+    /// Adds a phrase to the service
+    pub fn remove_phrase(&self, phrase: &Phrase) -> bool {
+        let mut state = self.state.lock().unwrap();
+        state.phrases.remove(&phrase)
     }
 
     /// Persists state to a file
@@ -119,7 +143,7 @@ mod tests {
 
     use std::path::PathBuf;
 
-    use crate::persistence::FinderService;
+    use crate::finder_service::FinderService;
 
     #[test]
     fn test_add_file_single() {

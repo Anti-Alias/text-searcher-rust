@@ -1,13 +1,14 @@
-use std::error::Error;
 use std::path::PathBuf;
 
 use rocket::{launch, routes, get, post, State};
 use rocket::http::Status;
 use rocket::serde::json::Json;
 
-use crate::persistence::FinderService;
+use text_searcher_rust::{Phrase, Text};
 
-pub mod persistence;
+use crate::finder_service::FinderService;
+
+pub mod finder_service;
 
 #[get("/")]
 fn index() -> &'static str { "Hello, world!" }
@@ -34,6 +35,42 @@ fn list_files(finder_service: &State<FinderService>) -> Json<Vec<PathBuf>> {
     Json(files)
 }
 
+#[post("/add-phrase", data = "<phrase>", format = "json")]
+fn add_phrase(phrase: Json<String>, finder_service: &State<FinderService>) -> Result<(), Status> {
+    let texts: Vec<Text> = phrase.0
+        .split_whitespace()
+        .map(|text_str| Text::from_str(text_str))
+        .collect();
+    finder_service.add_phrase(Phrase(texts));
+    persist_finder(finder_service)
+}
+
+#[post("/remove-phrase", data = "<phrase>", format = "json")]
+fn remove_phrase(phrase: Json<String>, finder_service: &State<FinderService>) -> Result<Json<bool>, Status> {
+    let texts: Vec<Text> = phrase.0
+        .split_whitespace()
+        .map(|text_str| Text::from_str(text_str))
+        .collect();
+    if finder_service.remove_phrase(&Phrase(texts)) {
+        persist_finder(finder_service)?;
+        Ok(Json(true))
+    }
+    else {
+        Ok(Json(false))
+    }
+}
+
+#[get("/list-phrases")]
+fn list_phrases(finder_service: &State<FinderService>) -> Json<Vec<String>> {
+    let state = finder_service.state();
+    let phrases: Vec<String> = state
+        .phrases()
+        .map(|phrase| phrase.to_string())
+        .collect();
+    Json(phrases)
+}
+
+
 //  Helper function that persists the finder service
 fn persist_finder(finder_service: &State<FinderService>) -> Result<(), Status> {
     match finder_service.persist() {
@@ -50,7 +87,10 @@ fn rocket() -> _ {
             index,
             add_file,
             remove_files,
-            list_files
+            list_files,
+            add_phrase,
+            remove_phrase,
+            list_phrases
         ])
         .manage(FinderService::new("persist.json"))
 }
