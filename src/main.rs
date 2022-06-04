@@ -5,16 +5,9 @@ use rocket::{launch, routes, get, post, State};
 use rocket::http::Status;
 use rocket::serde::json::Json;
 
-use serde::Serialize;
-
 use crate::persistence::FinderService;
 
 pub mod persistence;
-
-#[derive(Serialize)]
-struct FuckOff {
-    fuck_off: String
-}
 
 #[get("/")]
 fn index() -> &'static str { "Hello, world!" }
@@ -37,7 +30,8 @@ fn remove_files(file_name: &str, finder_service: &State<FinderService>) -> Resul
 #[get("/list-files")]
 fn list_files(finder_service: &State<FinderService>) -> Json<Vec<PathBuf>> {
     let state = finder_service.state();
-    Json(state.files().to_owned())
+    let files: Vec<PathBuf> = state.files().map(|path| path.to_owned()).collect();
+    Json(files)
 }
 
 //  Helper function that persists the finder service

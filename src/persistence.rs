@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::fs::{File, metadata};
 use std::path::{PathBuf, Path};
 use std::sync::{Mutex, MutexGuard};
@@ -15,12 +16,12 @@ pub struct FinderService {
 // Represents the inner state of a [`FinderService`]
 #[derive(Serialize, Deserialize)]
 pub struct State {
-    files: Vec<PathBuf>
+    files: HashSet<PathBuf>
 }
 
 impl State {
-    pub fn files(&self) -> &[PathBuf] {
-        &self.files
+    pub fn files(&self) -> impl Iterator<Item=&PathBuf> {
+        self.files.iter()
     }
 }
 
@@ -28,9 +29,19 @@ impl FinderService {
     
     /// Creates an empty [`FinderService`]
     pub fn new<P: AsRef<Path>>(persist_file: P) -> Self {
-        Self {
-            persist_file: persist_file.as_ref().to_owned(),
-            state: Mutex::new(State { files: Vec::new() })
+        let persist_file = persist_file.as_ref().to_owned();
+        match File::open(&persist_file) {
+            Ok(file) => {
+                let state = serde_json::from_reader(file).unwrap();
+                Self {
+                    persist_file,
+                    state: Mutex::new(state)
+                }
+            },
+            Err(_) => Self {
+                persist_file,
+                state: Mutex::new(State { files: HashSet::new() })
+            }
         }
     }
 
@@ -63,6 +74,7 @@ impl FinderService {
     pub fn persist(&self) -> Result<(), PersistErr> {
         let file = File::options()
             .create(true)
+            .truncate(true)
             .write(true)
             .open(&self.persist_file);
         let file = match file {
@@ -81,7 +93,7 @@ impl FinderService {
     fn _add_file<P: AsRef<Path>>(&self, filename: P) {
         let files = &mut self.state.lock().unwrap().files;
         let filename = filename.as_ref();
-        files.push(filename.to_owned());
+        files.insert(filename.to_owned());
         log::debug!("Added file {}", filename.display());
     }
 
@@ -89,7 +101,7 @@ impl FinderService {
         let files = &mut self.state.lock().unwrap().files;
         for entry in WalkDir::new(dirname).into_iter().flat_map(|entry| entry.ok()) {
             if entry.metadata().unwrap().is_file() {
-                files.push(entry.path().to_owned());
+                files.insert(entry.path().to_owned());
             }
         }
     }
@@ -127,7 +139,6 @@ mod tests {
         let service = FinderService::new("persist-file.json");
         let result = service.add_file("test_files/dir");
         let state = service.state();
-        
         assert!(result.is_ok());
         assert_eq!(
             &[
