@@ -126,11 +126,13 @@ mod tests {
         let service = FinderService::new("persist-file.json");
         let result = service.add_file("test_files/file.txt");
         let state = service.state();
-        
+        let mut files: Vec<PathBuf> = state.files().map(|file| file.to_owned()).collect();
+        files.sort();
+
         assert!(result.is_ok());
         assert_eq!(
-            &[PathBuf::from("test_files/file.txt")],
-            state.files()
+            [PathBuf::from("test_files/file.txt")].to_vec(),
+            files
         );
     }
 
@@ -139,13 +141,16 @@ mod tests {
         let service = FinderService::new("persist-file.json");
         let result = service.add_file("test_files/dir");
         let state = service.state();
+        let mut files: Vec<PathBuf> = state.files().map(|file| file.to_owned()).collect();
+        files.sort();
+
         assert!(result.is_ok());
         assert_eq!(
-            &[
+            [
                 PathBuf::from("test_files/dir/sub_file_1.txt"),
                 PathBuf::from("test_files/dir/sub_file_2.txt")
-            ],
-            state.files()
+            ].to_vec(),
+            files
         );
     }
 
@@ -155,9 +160,12 @@ mod tests {
         service.add_file("test_files/dir");
         service.remove_files("test_files/dir/sub_file_1.txt");
         let state = service.state();
+        let mut files: Vec<PathBuf> = state.files().map(|file| file.to_owned()).collect();
+        files.sort();
+
         assert_eq!(
-            &[PathBuf::from("test_files/dir/sub_file_2.txt")],
-            state.files()
+            [PathBuf::from("test_files/dir/sub_file_2.txt")].to_vec(),
+            files
         );
     }
 
@@ -168,9 +176,12 @@ mod tests {
         service.add_file("test_files/dir");
         service.remove_files("test_files/dir");
         let state = service.state();
+        let mut files: Vec<PathBuf> = state.files().map(|file| file.to_owned()).collect();
+        files.sort();
+
         assert_eq!(
-            &[PathBuf::from("test_files/file.txt")],
-            state.files()
+            [PathBuf::from("test_files/file.txt")].to_vec(),
+            files
         );
     }
 }
